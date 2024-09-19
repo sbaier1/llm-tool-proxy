@@ -1,10 +1,12 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import requests
 from langchain.llms.base import LLM
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
-from typing import Optional, List, Mapping, Any
+from typing import Optional, List, Mapping, Any, Generator
 import logging
+import time
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -58,12 +60,56 @@ class CustomLLM(LLM):
     def _llm_type(self) -> str:
         return "custom"
 
+# Function to simulate streaming by yielding chunks
+def generate_streamed_response(content: str) -> Generator[str, None, None]:
+    buffer = ""
+    for char in content:
+        buffer += char
+        # Define a chunk size or send per character
+        if len(buffer) >= 5:
+            chunk = {
+                "choices": [
+                    {
+                        "delta": {"content": buffer},
+                        "index": 0,
+                        "finish_reason": None
+                    }
+                ],
+                "id": "chatcmpl-KrQgb670aQeEUSzf0TKG3GQA2HuWwHBg",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": "custom",
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+            buffer = ""
+            time.sleep(0.05)  # Simulate delay between chunks
+    if buffer:
+        # Send any remaining characters
+        chunk = {
+            "choices": [
+                {
+                    "delta": {"content": buffer},
+                    "index": 0,
+                    "finish_reason": "stop"
+                }
+            ],
+            "id": "chatcmpl-KrQgb670aQeEUSzf0TKG3GQA2HuWwHBg",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": "custom",
+        }
+        yield f"data: {json.dumps(chunk)}\n\n"
+
 # Route for OpenAI completion-style API
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     try:
         data = request.get_json()
+        if data is None:
+            return jsonify({'error': 'Invalid JSON payload'}), 400
+
         messages = data.get('messages', [])
+        stream = data.get('stream', False)
 
         # Extract last user message and build memory
         last_user_message = ""
@@ -112,33 +158,39 @@ def chat_completions():
             logger.exception(f"An unexpected error occurred while processing the completion request: {str(e)}")
             return jsonify({'error': str(e)}), 500
 
-        # Construct the response in OpenAI API format
-        response_payload = {
-            "id": "chatcmpl-123",
-            "object": "chat.completion",
-            "created": 0,
-            "model": "custom",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": response_content,
-                    },
-                    "finish_reason": "stop"
+        if stream:
+            def streamed():
+                for chunk in generate_streamed_response(response_content):
+                    yield chunk
+            return Response(streamed(), mimetype='text/event-stream')
+        else:
+            # Construct the response in OpenAI API format
+            response_payload = {
+                "id": "chatcmpl-123",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "custom",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": response_content,
+                        },
+                        "finish_reason": "stop"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0
                 }
-            ],
-            "usage": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0
             }
-        }
+            return jsonify(response_payload)
 
     except Exception as e:
         logger.exception(f"An unexpected error occurred while processing the completion request: {str(e)}")
         return jsonify({'error': str(e)}), 500
-    return jsonify(response_payload)
 
 if __name__ == '__main__':
     app.run(port=5002)
