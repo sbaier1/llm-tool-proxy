@@ -39,42 +39,26 @@ def calculator_tool(text):
         return f"Error in calculation: {e}"
 
 
-# Bash Command Execution Tool
-def bash_command_tool(text):
-    forbidden_commands = ['rm ', 'ln ', 'mv ']
-
-    # Check for forbidden commands
-    for command in forbidden_commands:
-        if command in text:
-            return f"Error: Command '{command}' is not allowed."
-
+# Bash Command Execution Tool with single JSON input
+def bash_command_tool(command):
     try:
         # Run the command and capture the output
-        result = subprocess.run(text, shell=True, capture_output=True, text=True)
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
         # Truncate output if it exceeds 5000 characters
         max_output_length = 5000
-        if isinstance(result, str) and len(result) > max_output_length:
-            result = result[:max_output_length] + "\n[Output truncated: exceeded 5000 characters]"
+        if isinstance(result.stdout, str) and len(result.stdout) > max_output_length:
+            result_stdout = result.stdout[:max_output_length] + "\n[Output truncated: exceeded 5000 characters]"
+        else:
+            result_stdout = result.stdout
+
         if result.returncode != 0:
             return f"Error: {result.stderr}"
-        return result.stdout
+        return result_stdout
+
+    except json.JSONDecodeError:
+        return "Error: Invalid JSON input."
     except Exception as e:
         return f"Error executing bash command: {e}"
-
-
-python_repl = PythonREPL()
-
-
-# Define the validation function
-def validate_shell_input(input_data: str):
-    # List of forbidden keywords/commands
-    forbidden_keywords = [" delete ", "rm ", "mv "]
-
-    # Check if the input contains any forbidden keywords
-    for keyword in forbidden_keywords:
-        if keyword in input_data:
-            raise ValueError(f"Disallowed command detected: '{keyword.strip()}'")
-
 
 
 # Custom LLM that sends requests to the downstream API
@@ -90,7 +74,7 @@ class CustomLLM(LLM):
             ],
             # TODO just pass in params from initial query
             "max_tokens": 4000,
-            "temperature": 0.15,
+            "temperature": 0.1,
         }
         if stop is not None:
             payload['stop'] = stop
@@ -175,6 +159,7 @@ def nested_agent_tool(input_text: str) -> str:
         return f"Error in nested agent: {str(e)}"
 
 
+python_repl = PythonREPL()
 # Initialize tools
 tools = [
     Tool(
@@ -193,23 +178,28 @@ tools = [
         name="Nested Agent",
         func=nested_agent_tool,
         description="Use this tool to delegate a sub-task to another agent. "
+                    "Use it to subdivide a larger task. "
                     "Input should be the task you want the nested agent to perform. "
-                    "Describe your task concisely."
+                    "Describe the task concisely."
+                    # avoid recursion
+                    "Do not prompt an agent to create another agent.",
     ),
 ]
 
 if os.getenv("IM_FEELING_LUCKY") == "true":
     print("Adding shell tool to agent tools")
     tools.append(Tool(
-        name="BashCommandExecutor",
+        name="terminal",
         func=bash_command_tool,
         description="Executes arbitrary bash expressions. "
-                    "Be aware that commands like 'cd' will not persist across executions, "
+                    "Be aware that commands like 'cd' will not persist across executions "
                     "and 'rm', 'ln', and 'mv' are blocked. "
-                    "Chain your commands to execute more complex tasks. You cannot use interactive commands."
-                    "Do not modify any files using this tool."
-                    "Never pipe into files on disk."
+                    "Chain your commands to execute more complex tasks. "
+                    "You cannot use interactive commands. "
+                    "Do not modify any files using this tool. "
+                    "Never pipe into files on disk.",
     ))
+
 
 # Route for OpenAI completion-style API
 @app.route('/v1/chat/completions', methods=['POST'])
