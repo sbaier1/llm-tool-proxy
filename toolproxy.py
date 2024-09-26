@@ -3,10 +3,23 @@ import requests
 from langchain.llms.base import LLM
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
-from typing import Optional, List, Mapping, Any, Generator
+from typing import Optional, List, Mapping, Any, Generator, Union
 import logging
 import time
 import json
+import os
+
+# tools
+from langchain_community.tools import DuckDuckGoSearchResults
+from langchain_experimental.utilities import PythonREPL
+from langchain_community.tools import WikipediaQueryRun
+from langchain_community.utilities import WikipediaAPIWrapper
+from langchain_community.tools import ShellTool
+
+# The actual LLM we will call to.
+UPSTREAM_LLM = os.getenv("UPSTREAM_LLM")
+if UPSTREAM_LLM is None:
+    raise KeyError("You must configure the environment variable UPSTREAM_LLM. Must be a HTTP(s) URL.")
 
 # Configure logging
 logging.basicConfig(
@@ -17,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+
 # Define a simple calculator tool
 def calculator_tool(text):
     try:
@@ -24,17 +38,83 @@ def calculator_tool(text):
     except Exception as e:
         return f"Error in calculation: {e}"
 
+
+python_repl = PythonREPL()
+
+
+# Define the validation function
+def validate_shell_input(input_data: str):
+    # List of forbidden keywords/commands
+    forbidden_keywords = [" delete ", "rm ", "mv "]
+
+    # Check if the input contains any forbidden keywords
+    for keyword in forbidden_keywords:
+        if keyword in input_data:
+            raise ValueError(f"Disallowed command detected: '{keyword.strip()}'")
+
+
+# Subclass the ShellTool to add validation
+class CustomShellTool(ShellTool):
+    def run(self,
+            tool_input: Union[str, dict[str, Any]],
+            verbose: Optional[bool] = None,
+            start_color: Optional[str] = 'green',
+            color: Optional[str] = 'green',
+            callbacks: Optional[Any] = None,
+            *,
+            tags: Optional[list[str]] = None,
+            metadata: Optional[dict[str, Any]] = None,
+            run_name: Optional[str] = None,
+            run_id: Optional[Any] = None,
+            config: Optional[Any] = None,
+            tool_call_id: Optional[str] = None,
+            **kwargs: Any) -> Any:
+
+        # Extract the actual shell command input (assuming it's a string)
+        if isinstance(tool_input, str):
+            validate_shell_input(tool_input)
+        elif isinstance(tool_input, dict) and "input" in tool_input:
+            validate_shell_input(tool_input["input"])
+        else:
+            raise ValueError("Unsupported input format for ShellTool.")
+
+        # Proceed with the original execution of ShellTool
+        return super().run(
+            tool_input,
+            verbose=verbose,
+            start_color=start_color,
+            color=color,
+            callbacks=callbacks,
+            tags=tags,
+            metadata=metadata,
+            run_name=run_name,
+            run_id=run_id,
+            config=config,
+            tool_call_id=tool_call_id,
+            **kwargs
+        )
+
+
 tools = [
     Tool(
         name="Calculator",
         func=calculator_tool,
-        description="Useful for when you need to perform math calculations."
+        description="Useful for when you need to perform math calculations. Write expressions as Python code."
     ),
+    Tool(
+        name="python_repl",
+        description="A Python shell. Use this to execute python commands. Input should be a valid python command. If you want to see the output of a value, you should print it out with `print(...)`.",
+        func=python_repl.run,
+    ),
+    CustomShellTool(),
+    DuckDuckGoSearchResults(),
+    WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()),
 ]
+
 
 # Custom LLM that sends requests to the downstream API
 class CustomLLM(LLM):
-    endpoint_url: str = "http://192.168.178.28:8080/v1/chat/completions"  # Adjust the port if needed
+    endpoint_url: str = UPSTREAM_LLM
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         payload = {
@@ -42,8 +122,9 @@ class CustomLLM(LLM):
                 {"role": "system", "content": "You are an assistant that uses tools to answer questions."},
                 {"role": "user", "content": prompt}
             ],
-            "max_tokens": 150,
-            "temperature": 0.7,
+            # TODO just pass in params from initial query
+            "max_tokens": 4000,
+            "temperature": 0.15,
         }
         if stop is not None:
             payload['stop'] = stop
@@ -59,6 +140,7 @@ class CustomLLM(LLM):
     @property
     def _llm_type(self) -> str:
         return "custom"
+
 
 # Function to simulate streaming by yielding chunks
 def generate_streamed_response(content: str) -> Generator[str, None, None]:
@@ -99,6 +181,7 @@ def generate_streamed_response(content: str) -> Generator[str, None, None]:
             "model": "custom",
         }
         yield f"data: {json.dumps(chunk)}\n\n"
+
 
 # Route for OpenAI completion-style API
 @app.route('/v1/chat/completions', methods=['POST'])
@@ -162,6 +245,7 @@ def chat_completions():
             def streamed():
                 for chunk in generate_streamed_response(response_content):
                     yield chunk
+
             return Response(streamed(), mimetype='text/event-stream')
         else:
             # Construct the response in OpenAI API format
@@ -191,6 +275,7 @@ def chat_completions():
     except Exception as e:
         logger.exception(f"An unexpected error occurred while processing the completion request: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(port=5002)
