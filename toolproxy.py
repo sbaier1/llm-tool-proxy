@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, Response
 import requests
 from langchain.llms.base import LLM
-from langchain.agents import Tool, initialize_agent, AgentType
+from langchain.agents import Tool, AgentType, AgentExecutor, ConversationalAgent
 from langchain.memory import ConversationBufferMemory
 from typing import Optional, List, Mapping, Any, Generator, Union
 import logging
@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-
 # Define a simple calculator tool
 def calculator_tool(text):
     try:
@@ -38,9 +37,7 @@ def calculator_tool(text):
     except Exception as e:
         return f"Error in calculation: {e}"
 
-
 python_repl = PythonREPL()
-
 
 # Define the validation function
 def validate_shell_input(input_data: str):
@@ -51,7 +48,6 @@ def validate_shell_input(input_data: str):
     for keyword in forbidden_keywords:
         if keyword in input_data:
             raise ValueError(f"Disallowed command detected: '{keyword.strip()}'")
-
 
 # Subclass the ShellTool to add validation
 class CustomShellTool(ShellTool):
@@ -79,7 +75,7 @@ class CustomShellTool(ShellTool):
             raise ValueError("Unsupported input format for ShellTool.")
 
         # Proceed with the original execution of ShellTool
-        return super().run(
+        result = super().run(
             tool_input,
             verbose=verbose,
             start_color=start_color,
@@ -94,6 +90,12 @@ class CustomShellTool(ShellTool):
             **kwargs
         )
 
+        # Truncate output if it exceeds 5000 characters
+        max_output_length = 5000
+        if isinstance(result, str) and len(result) > max_output_length:
+            result = result[:max_output_length] + "\n[Output truncated: exceeded 5000 characters]"
+
+        return result
 
 tools = [
     Tool(
@@ -106,10 +108,12 @@ tools = [
         description="A Python shell. Use this to execute python commands. Input should be a valid python command. If you want to see the output of a value, you should print it out with `print(...)`.",
         func=python_repl.run,
     ),
-    CustomShellTool(),
     DuckDuckGoSearchResults(),
     WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()),
 ]
+if(os.getenv("IM_FEELING_LUCKY") == "true"):
+    print("Adding shell tool to agent tools")
+    tools.append(CustomShellTool())
 
 
 # Custom LLM that sends requests to the downstream API
@@ -140,7 +144,6 @@ class CustomLLM(LLM):
     @property
     def _llm_type(self) -> str:
         return "custom"
-
 
 # Function to simulate streaming by yielding chunks
 def generate_streamed_response(content: str) -> Generator[str, None, None]:
@@ -182,6 +185,53 @@ def generate_streamed_response(content: str) -> Generator[str, None, None]:
         }
         yield f"data: {json.dumps(chunk)}\n\n"
 
+# Nested agent tool function
+def nested_agent_tool(input_text: str) -> str:
+    print(f"Forking an agent for prompt {input_text}")
+    # Create a new memory for the nested agent
+    nested_memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    # Initialize the nested agent
+    nested_llm = CustomLLM()
+    nested_agent_chain = ConversationalAgent.from_llm_and_tools(
+        llm=nested_llm,
+        tools=tools,  # Use the same tools
+        verbose=True,
+    )
+    nested_agent = AgentExecutor.from_agent_and_tools(
+        agent=nested_agent_chain,
+        tools=tools,
+        memory=nested_memory,
+        verbose=True,
+    )
+    # Run the nested agent with the input text
+    try:
+        return nested_agent.run(input=input_text)
+    except Exception as e:
+        logger.exception(f"Error in nested agent: {str(e)}")
+        return f"Error in nested agent: {str(e)}"
+
+# Initialize tools
+tools = [
+    Tool(
+        name="Calculator",
+        func=calculator_tool,
+        description="Useful for when you need to perform math calculations. Write expressions as Python code."
+    ),
+    Tool(
+        name="python_repl",
+        description="A Python shell. Use this to execute python commands. Input should be a valid python command. If you want to see the output of a value, you should print it out with `print(...)`.",
+        func=python_repl.run,
+    ),
+    CustomShellTool(),
+    DuckDuckGoSearchResults(),
+    WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()),
+    Tool(
+        name="Nested Agent",
+        func=nested_agent_tool,
+        description="Use this tool to delegate a sub-task to another agent. "
+                    "Input should be the task you want the nested agent to perform."
+    ),
+]
 
 # Route for OpenAI completion-style API
 @app.route('/v1/chat/completions', methods=['POST'])
@@ -225,13 +275,14 @@ def chat_completions():
 
         # Initialize the custom LLM and agent with memory
         llm = CustomLLM()
-        agent = initialize_agent(
-            tools,
-            llm,
-            agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
-            verbose=True,
-            handle_parsing_errors=True,
-            memory=memory
+        agent_chain = ConversationalAgent.from_llm_and_tools(
+            llm=llm,
+            tools=tools,
+        )
+        agent = AgentExecutor.from_agent_and_tools(
+            agent=agent_chain,
+            tools=tools,
+            memory=memory,
         )
 
         # Process the prompt through the agent
@@ -275,7 +326,6 @@ def chat_completions():
     except Exception as e:
         logger.exception(f"An unexpected error occurred while processing the completion request: {str(e)}")
         return jsonify({'error': str(e)}), 500
-
 
 if __name__ == '__main__':
     app.run(port=5002)
