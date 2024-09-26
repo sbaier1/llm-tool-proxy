@@ -1,0 +1,7 @@
+flask
+requests
+langchain
+langchain-community
+duckduckgo-search
+langchain-experimental
+wikipedia
