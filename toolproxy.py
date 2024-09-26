@@ -21,6 +21,9 @@ UPSTREAM_LLM = os.getenv("UPSTREAM_LLM")
 if UPSTREAM_LLM is None:
     raise KeyError("You must configure the environment variable UPSTREAM_LLM. Must be a HTTP(s) URL.")
 
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.17"))
+MAX_TOKENS = float(os.getenv("MAX_TOKENS", "4000"))
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,  # Set to DEBUG for more verbosity
@@ -73,8 +76,8 @@ class CustomLLM(LLM):
                 {"role": "user", "content": prompt}
             ],
             # TODO just pass in params from initial query
-            "max_tokens": 4000,
-            "temperature": 0.1,
+            "max_tokens": MAX_TOKENS,
+            "temperature": TEMPERATURE,
         }
         if stop is not None:
             payload['stop'] = stop
@@ -169,7 +172,9 @@ tools = [
     ),
     Tool(
         name="python_repl",
-        description="A Python shell. Use this to execute python commands. Input should be a valid python command. If you want to see the output of a value, you should print it out with `print(...)`.",
+        description="A Python shell. Use this to execute python commands. "
+                    "Input should be a valid python command. "
+                    "If you want to see the output of a value, you should print it out with `print(...)`.",
         func=python_repl.run,
     ),
     DuckDuckGoSearchResults(),
@@ -189,11 +194,10 @@ tools = [
 if os.getenv("IM_FEELING_LUCKY") == "true":
     print("Adding shell tool to agent tools")
     tools.append(Tool(
-        name="terminal",
+        name="bash",
         func=bash_command_tool,
-        description="Executes arbitrary bash expressions. "
-                    "Be aware that commands like 'cd' will not persist across executions "
-                    "and 'rm', 'ln', and 'mv' are blocked. "
+        description="Execute a bash expression. Similar to 'sh -c', not a continuous shell. "
+                    "'rm', 'ln', and 'mv' are blocked. "
                     "Chain your commands to execute more complex tasks. "
                     "You cannot use interactive commands. "
                     "Do not modify any files using this tool. "
