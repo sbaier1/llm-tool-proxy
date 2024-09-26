@@ -186,7 +186,7 @@ tools = [
                     "Use it to subdivide a larger task. "
                     "Input should be the task you want the nested agent to perform. "
                     "Describe the task concisely."
-                    # avoid recursion
+        # avoid recursion
                     "Do not prompt an agent to create another agent.",
     ),
 ]
