@@ -23,6 +23,10 @@ if UPSTREAM_LLM is None:
 
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.17"))
 MAX_TOKENS = float(os.getenv("MAX_TOKENS", "4000"))
+# truncate shell output to this many chars
+MAX_OUTPUT_LENGTH = int(os.getenv("MAX_OUTPUT_LENGTH", "5000"))
+
+SYSTEM_PROMPT = """You are a knowledgeable assistant. You can answer questions and perform tasks. Split up large tasks to nested agents."""
 
 # Configure logging
 logging.basicConfig(
@@ -47,10 +51,11 @@ def bash_command_tool(command):
     try:
         # Run the command and capture the output
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        # Truncate output if it exceeds 5000 characters
-        max_output_length = 5000
+        # Truncate output if it exceeds max characters
+        max_output_length = MAX_OUTPUT_LENGTH
         if isinstance(result.stdout, str) and len(result.stdout) > max_output_length:
-            result_stdout = result.stdout[:max_output_length] + "\n[Output truncated: exceeded 5000 characters]"
+            result_stdout = result.stdout[
+                            :max_output_length] + f"\n[Output truncated: exceeded {MAX_OUTPUT_LENGTH} characters]"
         else:
             result_stdout = result.stdout
 
@@ -71,8 +76,8 @@ class CustomLLM(LLM):
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         payload = {
             "messages": [
-                {"role": "system", "content": "You are an assistant that can use tools to answer questions. "
-                                              "Think whether you need to use a tool before you execute a tool."},
+                {"role": "system",
+                 "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
             # TODO just pass in params from initial query
@@ -117,7 +122,7 @@ def generate_streamed_response(content: str) -> Generator[str, None, None]:
             }
             yield f"data: {json.dumps(chunk)}\n\n"
             buffer = ""
-            time.sleep(0.05)  # Simulate delay between chunks
+            time.sleep(0.01)  # Simulate delay between chunks
     if buffer:
         # Send any remaining characters
         chunk = {
@@ -303,4 +308,4 @@ def chat_completions():
 
 
 if __name__ == '__main__':
-    app.run(port=5002)
+    app.run(host="0.0.0.0", port=5002)
